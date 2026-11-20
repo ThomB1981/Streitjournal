@@ -128,6 +128,13 @@ textarea{resize:vertical;min-height:64px}
 .save.ghost{background:transparent;color:var(--green-dk);border:3px solid var(--green-dk)}
 .parent{display:flex;flex-direction:column;align-items:center;gap:2px;text-align:center;font-size:14px;font-weight:700;color:var(--gold-fg);background:var(--gold-lt);border-radius:14px;padding:10px}
 
+/* Sicherung */
+.bktxt{margin:0;font-size:15px;color:var(--muted)}
+.bklast{margin:0;font-weight:800;font-size:14px;color:var(--green-dk)}
+.bklast.warn{color:var(--red)}
+.bkmsg{margin:0;border-radius:14px;padding:10px;text-align:center;font-weight:800;background:var(--green-lt);color:var(--green-dk)}
+.bkmsg.bad{background:var(--red-lt);color:var(--fg)}
+
 /* Streit-Formular: die ganze Karte wird rot */
 .card.streit{background:var(--red-lt);box-shadow:0 6px 0 var(--red-shadow);transition:background .2s}
 .card.streit .daytag{background:var(--red);color:#fff}
@@ -234,6 +241,25 @@ textarea{resize:vertical;min-height:64px}
     <p class="hint">Öffnet WhatsApp mit dem Monat, der gerade angezeigt wird.</p>
   </section>
 
+  <section class="card" id="backup">
+    <p class="q small">Sicherung</p>
+    <p class="bktxt">Speichere ab und zu eine Sicherung in der Dateien-App oder schick sie an Papa. Dann geht nichts verloren, auch wenn der Verlauf gelöscht wird.</p>
+    <p class="bklast" id="bkLast"></p>
+    <button class="save" id="bkSave" type="button">Sicherung speichern</button>
+    <button class="save ghost" id="bkLoad" type="button">Sicherung laden (nur für Eltern)</button>
+    <form id="bkPin" class="pinform" hidden autocomplete="off">
+      <label class="q small" for="bkPinIn">Passwort für Eltern</label>
+      <input id="bkPinIn" type="password" inputmode="numeric" autocomplete="off" maxlength="12">
+      <p class="pinerr" id="bkPinErr" hidden>Das Passwort stimmt nicht.</p>
+      <div class="yn">
+        <button class="save" type="submit">Datei wählen</button>
+        <button class="save ghost" id="bkPinCancel" type="button">Abbrechen</button>
+      </div>
+    </form>
+    <input type="file" id="bkFile" accept=".json,application/json" hidden>
+    <p class="bkmsg" id="bkMsg" role="status" hidden></p>
+  </section>
+
 </div>
 
 <script>
@@ -304,7 +330,7 @@ textarea{resize:vertical;min-height:64px}
   function applyName(){
     const t=appTitle();
     $('appName').textContent=t; document.title=t; $('appleTitle').setAttribute('content',t);
-    $('setup').hidden=!!kidName; $('entry').hidden=!kidName; $('cal').hidden=!kidName;
+    $('setup').hidden=!!kidName; $('entry').hidden=!kidName; $('cal').hidden=!kidName; $('backup').hidden=!kidName;
   }
   $('nameForm').addEventListener('submit',ev=>{
     ev.preventDefault();
@@ -473,6 +499,7 @@ textarea{resize:vertical;min-height:64px}
     const mon0=monday(now); let w=0;
     for(let i=0;i<5;i++){const k=iso(addDays(mon0,i)),e=data[k]; if(e&&e.streit&&!isFree(k))w++}
     $('wk').textContent=w;
+    if($('bkLast'))showLastBackup();
 
     let ts=0; const mondays=new Set();
     Object.keys(data).forEach(k=>{ if(green(k)){ts++; mondays.add(iso(monday(parse(k))))} });
@@ -498,6 +525,68 @@ textarea{resize:vertical;min-height:64px}
   }
   ['sendPapa','sendMama'].forEach(id=>$(id).addEventListener('click',function(){this.href=report()}));
 
+  // Sicherung: Datei mit allen Einträgen speichern und wieder einspielen
+  const BK_KEY='streitjournal_backup';
+  const fmtDate=s=>{const d=new Date(s);return isNaN(d)?'':d.toLocaleDateString('de-DE',{day:'numeric',month:'long',year:'numeric'})};
+  function showLastBackup(){
+    let s='';try{s=localStorage.getItem(BK_KEY)||''}catch(e){}
+    const el=$('bkLast'), hasData=Object.keys(data).length>0;
+    if(!s){el.textContent=hasData?'Noch keine Sicherung gespeichert.':'';el.hidden=!hasData;el.className='bklast warn';return}
+    el.hidden=false;
+    const old=(Date.now()-new Date(s).getTime())>7*864e5;
+    el.textContent='Letzte Sicherung: '+fmtDate(s)+(old?'. Zeit für eine neue!':'');
+    el.className='bklast'+(old?' warn':'');
+  }
+  function bkStatus(t,bad){const m=$('bkMsg');m.textContent=t||'';m.className='bkmsg'+(bad?' bad':'');m.hidden=!t}
+  $('bkSave').onclick=async()=>{
+    const stamp=new Date();
+    const json=JSON.stringify({app:'streitjournal',version:1,erstellt:stamp.toISOString(),name:kidName,eintraege:data},null,1);
+    const fname='streitjournal-sicherung-'+iso(stamp)+'.json';
+    const mark=()=>{try{localStorage.setItem(BK_KEY,stamp.toISOString())}catch(e){} showLastBackup()};
+    let file=null; try{file=new File([json],fname,{type:'application/json'})}catch(e){}
+    if(file&&navigator.canShare&&navigator.share){
+      let can=false; try{can=navigator.canShare({files:[file]})}catch(e){}
+      if(can){
+        try{await navigator.share({files:[file],title:'Streitjournal-Sicherung'});mark();bkStatus('Sicherung gespeichert.');return}
+        catch(e){if(e&&e.name==='AbortError'){bkStatus('');return}}
+      }
+    }
+    try{
+      const url=URL.createObjectURL(new Blob([json],{type:'application/json'}));
+      const a=document.createElement('a');a.href=url;a.download=fname;document.body.appendChild(a);a.click();a.remove();
+      setTimeout(()=>URL.revokeObjectURL(url),4000);
+      mark();bkStatus('Die Sicherung wurde als Datei gespeichert.');
+    }catch(e){bkStatus('Die Sicherung konnte hier nicht gespeichert werden.',true)}
+  };
+  $('bkLoad').onclick=()=>{$('bkLoad').hidden=true;$('bkPin').hidden=false;$('bkPinErr').hidden=true;$('bkPinIn').value='';bkStatus('');$('bkPinIn').focus()};
+  $('bkPinCancel').onclick=()=>{$('bkPin').hidden=true;$('bkLoad').hidden=false;$('bkPinIn').value=''};
+  $('bkPin').addEventListener('submit',ev=>{
+    ev.preventDefault();
+    const ok=checkPin($('bkPinIn').value.trim()); $('bkPinIn').value='';
+    if(!ok){$('bkPinErr').hidden=false;$('bkPinIn').focus();return}
+    $('bkPin').hidden=true;$('bkLoad').hidden=false;$('bkFile').value='';$('bkFile').click();
+  });
+  function restore(text){
+    let b; try{b=JSON.parse(text)}catch(e){b=null}
+    if(!b||b.app!=='streitjournal'||!b.eintraege||typeof b.eintraege!=='object'){bkStatus('Diese Datei ist keine Streitjournal-Sicherung.',true);return}
+    let added=0;
+    Object.keys(b.eintraege).forEach(k=>{
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(k)||data[k])return;
+      const e=b.eintraege[k]; if(!e||typeof e.streit!=='boolean')return;
+      data[k]=e.streit?{streit:true,mit:String(e.mit||''),ausloeser:String(e.ausloeser||''),art:Array.isArray(e.art)?e.art.map(String):[],anders:String(e.anders||'')}:{streit:false};
+      added++;
+    });
+    if(!kidName&&b.name){kidName=String(b.name);try{localStorage.setItem(NAME_KEY,kidName)}catch(e){}applyName()}
+    store();showState();render();showLastBackup();
+    bkStatus(added?(added===1?'1 Tag':added+' Tage')+' aus der Sicherung wiederhergestellt.':'Alle Tage aus der Sicherung waren schon da.');
+  }
+  $('bkFile').addEventListener('change',()=>{
+    const f=$('bkFile').files&&$('bkFile').files[0]; if(!f)return;
+    const r=new FileReader();
+    r.onload=()=>restore(String(r.result));
+    r.onerror=()=>bkStatus('Die Datei konnte nicht gelesen werden.',true);
+    r.readAsText(f);
+  });
   showState(); render();
 })();
 </script>
